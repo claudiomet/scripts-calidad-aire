@@ -1,0 +1,16 @@
+# Ignorar la carpeta de entradas (CSVs grandes)
+input/
+
+# Ignorar las carpetas de resultados
+output_*/
+
+# Ignorar archivos ocultos y temporales de sistema
+.DS_Store
+*.swp
+__pycache__/
+*.pyc
+
+# Ignorar el entorno virtual (si se llegara a crear)
+venv/
+env/
+.env
