@@ -11,7 +11,7 @@ import glob
 # 1. PARÁMETROS CONFIGURABLES
 # ==============================================================================
 INPUT_DIR = "input"
-CONTAMINANTE = "MP10"  # Para Material Particulado Sedimentable usar "MPS"
+CONTAMINANTE = "SO2"  # Para Material Particulado Sedimentable usar "MPS"
 AÑO_INICIO = 2023
 AÑO_FIN = 2025
 UNIDADES = "µg/m³N"  # Para MPS podría ser "mg/m²-dia"
@@ -194,6 +194,8 @@ def main():
             df[col_objetivo] = df[col_objetivo].astype(str).str.replace('"', '').str.replace(',', '.').astype(float)
                 
         df_month = calcular_valor_mensual(df, col_objetivo, is_hourly, is_o3_co, is_native_monthly)
+        if df_month.empty:
+            continue
         df_month = df_month[(df_month['Datetime'].dt.year >= AÑO_INICIO) & (df_month['Datetime'].dt.year <= AÑO_FIN)]
         
         if not df_month.empty:
@@ -250,6 +252,8 @@ def main():
             df[col_objetivo] = df[col_objetivo].astype(str).str.replace('"', '').str.replace(',', '.').astype(float)
             
         df_month = calcular_valor_mensual(df, col_objetivo, is_hourly, is_o3_co, is_native_monthly)
+        if df_month.empty:
+            continue
             
         fig, ax = plt.subplots(figsize=(16, 6))
         datos_ploteados = False
@@ -305,7 +309,7 @@ def main():
             continue
             
         if texto_hallazgos:
-            filename_txt = f"{estacion}-{cont_str}-mes-{AÑO_INICIO}-{AÑO_FIN}.txt"
+            filename_txt = f"{estacion}-{cont_str}-mensual-{AÑO_INICIO}-{AÑO_FIN}.txt"
             filepath_txt = os.path.join(out_dir_text, filename_txt)
             with open(filepath_txt, 'w', encoding='utf-8') as f:
                 f.write(texto_hallazgos.strip() + "\n")
@@ -370,7 +374,7 @@ def main():
         ax.legend(handles=handles, loc='upper center', bbox_to_anchor=(0.5, -0.15), 
                   ncol=len(handles), frameon=False)
         
-        filename_img = f"{estacion}-{cont_str}-mes-{AÑO_INICIO}-{AÑO_FIN}.png"
+        filename_img = f"{estacion}-{cont_str}-mensual-{AÑO_INICIO}-{AÑO_FIN}.png"
         filepath_img = os.path.join(out_dir_chart, filename_img)
         plt.savefig(filepath_img, dpi=300, bbox_inches='tight')
         plt.close(fig)

@@ -11,19 +11,14 @@ import glob
 # 1. PARÁMETROS CONFIGURABLES
 # ==============================================================================
 INPUT_DIR = "input"
-CONTAMINANTE = "CO"  # Editable, ej: "MP10", "MP2.5", "O3", "SO2", "CO"
+CONTAMINANTE = "SO2"  # Para Material Particulado Sedimentable usar "MPS"
 AÑO_INICIO = 2023
 AÑO_FIN = 2025
-UNIDADES = "µg/m³N"
-FORMATO_TITULO = "Concentraciones diarias de {contaminante} - Estación {estacion}"
+UNIDADES = "µg/m³N"  # Para MPS podría ser "mg/m²-dia"
+FORMATO_TITULO = "Concentraciones trimestrales de {contaminante} - Estación {estacion}"
 COLOR_TITULO = "white"  # 'white' para ocultar, 'black' para mostrar
-NORMA_PRIMARIA = 130.0  # Asumido por defecto para la revisión, editable
+NORMA_PRIMARIA = None  # Ajustar a 333.0 si es MPS u otro valor
 NORMA_SECUNDARIA = None 
-
-# --- DIMENSIONES DEL GRÁFICO ---
-ANCHO_GRAFICO_PX = 1280
-ALTO_GRAFICO_PX = 480
-DPI_GRAFICO = 100
 
 # Mismo color por año 
 COLORES_POR_AÑO = {
@@ -60,6 +55,7 @@ def obtener_directorio_salida_texto(contaminante):
     return f"output_{cont_str}_text"
 
 def procesar_fechas_dataframe(df):
+    is_native_monthly = False
     if 'Fecha' in df.columns:
         df['Fecha'] = pd.to_datetime(df['Fecha'], format='%d/%m/%Y', errors='coerce')
         if 'Hora' in df.columns and df['Hora'].notnull().any():
@@ -75,17 +71,14 @@ def procesar_fechas_dataframe(df):
             fechas_str = df[col_anio].astype(str).str.replace('.0', '', regex=False) + '-' + df[col_mes].astype(str).str.zfill(2) + '-01'
             df['Fecha'] = pd.to_datetime(fechas_str, format='%Y-%m-%d', errors='coerce')
             df['Datetime'] = df['Fecha']
+            is_native_monthly = True
         else:
-            return pd.DataFrame()
-    return df
+            return pd.DataFrame(), False
+            
+    return df, is_native_monthly
 
 def calcular_valor_diario(df, col_objetivo, is_hourly, is_o3_co):
-    """
-    Consolida las métricas para convertirlas en un valor diario validado e invalido.
-    Considera el 75% de suficiencia de datos normativo.
-    """
     if not is_hourly:
-        # La estación ya reporta de forma diaria. Usamos los datos tal cual y se asumen válidos.
         df_daily = df.copy()
         df_daily['Datetime'] = pd.to_datetime(df_daily['Fecha'].dt.date)
         df_daily['valor_diario'] = df_daily[col_objetivo]
@@ -93,27 +86,22 @@ def calcular_valor_diario(df, col_objetivo, is_hourly, is_o3_co):
         df_daily = df_daily.drop_duplicates(subset=['Datetime'], keep='last')
         return df_daily[['Datetime', 'valor_diario', 'Fecha', 'valido']].dropna(subset=['valor_diario'])
 
-    # Si es horaria, procedemos a calcular los promedios
     df = df.dropna(subset=['Datetime', col_objetivo])
     df = df.sort_values('Datetime')
     df = df.drop_duplicates(subset=['Datetime'])
     df_idx = df.set_index('Datetime')
 
     if is_o3_co:
-        # Ozono o CO: Máximo del promedio móvil de 8 horas
         df_idx['movil_8h_todos'] = df_idx[col_objetivo].rolling('8h', min_periods=1).mean()
         df_idx['movil_8h_valido'] = df_idx[col_objetivo].rolling('8h', min_periods=6).mean()
         daily_todos = df_idx['movil_8h_todos'].resample('D').max()
         daily_valido = df_idx['movil_8h_valido'].resample('D').max()
-        daily_count = df_idx['movil_8h_valido'].resample('D').count()
         df_daily = pd.DataFrame({
             'valor_diario': daily_todos,
-            'valor_valido': daily_valido,
-            'count': daily_count
+            'valor_valido': daily_valido
         }).reset_index()
-        df_daily['valido'] = df_daily['count'] >= 18
+        df_daily['valido'] = df_daily['valor_valido'].notnull()
     else:
-        # Resto de contaminantes: Promedio aritmético de 24 horas.
         daily_mean = df_idx[col_objetivo].resample('D').mean()
         daily_count = df_idx[col_objetivo].resample('D').count()
         df_daily = pd.DataFrame({
@@ -125,17 +113,64 @@ def calcular_valor_diario(df, col_objetivo, is_hourly, is_o3_co):
     df_daily['Fecha'] = pd.to_datetime(df_daily['Datetime'].dt.date)
     return df_daily.dropna(subset=['valor_diario'])
 
+def calcular_valor_trimestral(df, col_objetivo, is_hourly, is_o3_co, is_native_monthly):
+    if is_native_monthly:
+        # Si es un consolidado mensual (ej: MPS), agrupar los meses en trimestres
+        df_trimestre = df.copy()
+        df_trimestre['Datetime'] = pd.to_datetime(df_trimestre['Fecha'].dt.to_period('M').dt.to_timestamp())
+        df_trimestre['Trimestre_Inicio'] = df_trimestre['Datetime'].dt.to_period('Q').dt.to_timestamp()
+        
+        def agg_native(x):
+            return pd.Series({'valor_trimestral': x[col_objetivo].mean()})
+            
+        df_trimestre = df_trimestre.groupby('Trimestre_Inicio').apply(agg_native, include_groups=False).reset_index()
+        df_trimestre['Datetime'] = df_trimestre['Trimestre_Inicio']
+        df_trimestre['valido'] = True
+        df_trimestre['days_in_quarter'] = 90
+        df_trimestre['porcentaje_validos'] = 100.0
+        return df_trimestre[['Datetime', 'valor_trimestral', 'valido', 'days_in_quarter', 'porcentaje_validos']].dropna(subset=['valor_trimestral'])
+
+    df_daily = calcular_valor_diario(df, col_objetivo, is_hourly, is_o3_co)
+    if df_daily.empty:
+        return pd.DataFrame()
+        
+    df_daily['Trimestre_Inicio'] = df_daily['Fecha'].dt.to_period('Q').dt.to_timestamp()
+    df_daily['Trimestre_Fin'] = df_daily['Fecha'].dt.to_period('Q').dt.to_timestamp('Q')
+    df_daily['days_in_quarter'] = (df_daily['Trimestre_Fin'] - df_daily['Trimestre_Inicio']).dt.days + 1
+    
+    def agg_func(x):
+        valid_days = x[x['valido']]
+        if len(valid_days) == 0:
+            mean_val = x['valor_diario'].mean()
+            count_valid = 0
+        else:
+            mean_val = valid_days['valor_diario'].mean()
+            count_valid = len(valid_days)
+        return pd.Series({'valor_trimestral': mean_val, 'valid_count': count_valid})
+        
+    trimestre_agg = df_daily.groupby(['Trimestre_Inicio', 'days_in_quarter']).apply(agg_func, include_groups=False).reset_index()
+    
+    # Lógica de validación
+    if is_hourly:
+        # Estación continua: 75% de los días del trimestre
+        trimestre_agg['valido'] = trimestre_agg['valid_count'] >= (0.75 * trimestre_agg['days_in_quarter'])
+        trimestre_agg['porcentaje_validos'] = (trimestre_agg['valid_count'] / trimestre_agg['days_in_quarter']) * 100.0
+    else:
+        # Estación discreta (ej. filtros cada 3 días), aprox 30 datos al trimestre.
+        trimestre_agg['valido'] = trimestre_agg['valid_count'] >= 21
+        trimestre_agg['porcentaje_validos'] = (trimestre_agg['valid_count'] / 30.0) * 100.0
+        trimestre_agg['porcentaje_validos'] = trimestre_agg['porcentaje_validos'].clip(upper=100.0)
+        
+    trimestre_agg = trimestre_agg.rename(columns={'Trimestre_Inicio': 'Datetime'})
+    
+    return trimestre_agg[['Datetime', 'valor_trimestral', 'valido', 'days_in_quarter', 'porcentaje_validos']].dropna(subset=['valor_trimestral'])
+
 
 def main():
-    print(f"-> Analizando todos los archivos diarios para {CONTAMINANTE} entre {AÑO_INICIO} y {AÑO_FIN}...")
+    print(f"-> Analizando todos los archivos para generar promedios trimestrales de {CONTAMINANTE} ({AÑO_INICIO}-{AÑO_FIN})...")
     
-    # Determinar si es O3 o CO para aplicar lógica normativa de 8 horas
     contaminante_lower = CONTAMINANTE.lower()
     is_o3_co = 'o3' in contaminante_lower or 'ozono' in contaminante_lower or 'co' in contaminante_lower or 'monoxido' in contaminante_lower or 'monóxido' in contaminante_lower
-    if is_o3_co:
-        print("   [NORMATIVA] Contaminante detectado como O3/CO. Se aplicará máximo diario de media móvil de 8h (min 6h).")
-    else:
-        print("   [NORMATIVA] Se aplicará promedio aritmético diario (min 18h válidas).")
         
     global_max = 0.0
     global_max_all = 0.0
@@ -144,7 +179,7 @@ def main():
     
     archivos_csv = glob.glob(os.path.join(INPUT_DIR, "*.csv"))
     
-    # FASE 1: Buscar máximo global considerando ambos tipos de estación
+    # FASE 1: Buscar máximo global
     for filepath in archivos_csv:
         try:
             df = pd.read_csv(filepath, sep=',', encoding='utf-8', on_bad_lines='skip')
@@ -158,32 +193,32 @@ def main():
             
         is_hourly = 'Hora' in df.columns and df['Hora'].notnull().any()
             
-        df = procesar_fechas_dataframe(df)
+        df, is_native_monthly = procesar_fechas_dataframe(df)
         if df.empty:
             continue
             
         if df[col_objetivo].dtype == object:
             df[col_objetivo] = df[col_objetivo].astype(str).str.replace('"', '').str.replace(',', '.').astype(float)
                 
-        df_daily = calcular_valor_diario(df, col_objetivo, is_hourly, is_o3_co)
-        df_daily = df_daily[(df_daily['Fecha'].dt.year >= AÑO_INICIO) & (df_daily['Fecha'].dt.year <= AÑO_FIN)]
+        df_trimestre = calcular_valor_trimestral(df, col_objetivo, is_hourly, is_o3_co, is_native_monthly)
+        if df_trimestre.empty:
+            continue
+        df_trimestre = df_trimestre[(df_trimestre['Datetime'].dt.year >= AÑO_INICIO) & (df_trimestre['Datetime'].dt.year <= AÑO_FIN)]
         
-        if not df_daily.empty:
-            max_all = df_daily['valor_diario'].max()
+        if not df_trimestre.empty:
+            max_all = df_trimestre['valor_trimestral'].max()
             if pd.notnull(max_all) and max_all > global_max_all:
                 global_max_all = max_all
                 
-            # Filtramos solo por los valores normativos válidos para buscar el máximo global
-            df_valid = df_daily[df_daily['valido']]
+            df_valid = df_trimestre[df_trimestre['valido']]
             if not df_valid.empty:
-                max_val = df_valid['valor_diario'].max()
+                max_val = df_valid['valor_trimestral'].max()
                 if pd.notnull(max_val) and max_val > global_max:
                     global_max = max_val
-                    
-                    idx_max = df_valid['valor_diario'].idxmax()
+                    idx_max = df_valid['valor_trimestral'].idxmax()
                     estacion_max = extraer_nombre_estacion(filepath)
                     dt_max = df_valid.loc[idx_max, 'Datetime']
-                    fecha_max_str = dt_max.strftime('%d/%m/%Y') if pd.notnull(dt_max) else "Desconocida"
+                    fecha_max_str = dt_max.strftime('%m/%Y') if pd.notnull(dt_max) else "Desconocida"
 
     y_max_plot = max(global_max, global_max_all)
     if NORMA_PRIMARIA is not None:
@@ -191,10 +226,10 @@ def main():
     if NORMA_SECUNDARIA is not None:
         y_max_plot = max(y_max_plot, NORMA_SECUNDARIA)
         
-    print(f"   [INFO] Valor máximo diario detectado: {global_max:.2f} (Estación: '{estacion_max}', Fecha: {fecha_max_str})")
+    print(f"   [INFO] Valor máximo trimestral detectado: {global_max:.2f} (Estación: '{estacion_max}', Mes: {fecha_max_str})")
     print(f"   [INFO] Escala del eje Y fijada en: {y_max_plot:.2f}\n")
 
-    # FASE 2: Generar gráficos y extraer variables de texto (Ambos tipos de estación)
+    # FASE 2: Generar gráficos y extraer variables de texto
     out_dir_chart = obtener_directorio_salida_grafico(CONTAMINANTE)
     out_dir_text = obtener_directorio_salida_texto(CONTAMINANTE)
     os.makedirs(out_dir_chart, exist_ok=True)
@@ -216,40 +251,50 @@ def main():
         is_hourly = 'Hora' in df.columns and df['Hora'].notnull().any()
             
         estacion = extraer_nombre_estacion(filepath)
-        df = procesar_fechas_dataframe(df)
+        df, is_native_monthly = procesar_fechas_dataframe(df)
         if df.empty:
             continue
             
         if df[col_objetivo].dtype == object:
             df[col_objetivo] = df[col_objetivo].astype(str).str.replace('"', '').str.replace(',', '.').astype(float)
             
-        df_daily = calcular_valor_diario(df, col_objetivo, is_hourly, is_o3_co)
+        df_trimestre = calcular_valor_trimestral(df, col_objetivo, is_hourly, is_o3_co, is_native_monthly)
+        if df_trimestre.empty:
+            continue
             
-        fig, ax = plt.subplots(figsize=(ANCHO_GRAFICO_PX / DPI_GRAFICO, ALTO_GRAFICO_PX / DPI_GRAFICO))
+        fig, ax = plt.subplots(figsize=(16, 6))
         datos_ploteados = False
         
         texto_hallazgos = ""
         i_year = 1
         
         for year in range(AÑO_INICIO, AÑO_FIN + 1):
-            df_year = df_daily[df_daily['Datetime'].dt.year == year].copy()
+            df_year = df_trimestre[df_trimestre['Datetime'].dt.year == year].copy()
             
             texto_hallazgos += f"anio{i_year}={year}\n"
             
             df_year_valid = df_year[df_year['valido']] if not df_year.empty else pd.DataFrame()
             if not df_year_valid.empty:
-                idx_max_year = df_year_valid['valor_diario'].idxmax()
+                idx_max_year = df_year_valid['valor_trimestral'].idxmax()
                 row_max = df_year_valid.loc[idx_max_year]
                 
-                fecha_str = row_max['Datetime'].strftime('%d/%m/%Y')
-                valor_max = row_max['valor_diario']
+                fecha_str = row_max['Datetime'].strftime('%m/%Y')
+                valor_max = row_max['valor_trimestral']
                 
-                texto_hallazgos += f"fecha_max_dia_anio{i_year}={fecha_str}\n"
-                texto_hallazgos += f"valor_max_dia_anio{i_year}={int(round(valor_max))}\n"
+                texto_hallazgos += f"mes_max_trimestral_anio{i_year}={fecha_str}\n"
+                texto_hallazgos += f"valor_max_trimestral_anio{i_year}={int(round(valor_max))}\n"
             else:
-                texto_hallazgos += f"fecha_max_dia_anio{i_year}=\n"
-                texto_hallazgos += f"valor_max_dia_anio{i_year}=\n"
+                texto_hallazgos += f"mes_max_trimestral_anio{i_year}=\n"
+                texto_hallazgos += f"valor_max_trimestral_anio{i_year}=\n"
                 
+            for m in range(1, 13):
+                row_mes = df_year[df_year['Datetime'].dt.month == m] if not df_year.empty else pd.DataFrame()
+                if not row_mes.empty:
+                    porcentaje = row_mes.iloc[0]['porcentaje_validos']
+                    texto_hallazgos += f"validos_mes{m}_anio{i_year}={porcentaje:.1f}\n"
+                else:
+                    texto_hallazgos += f"validos_mes{m}_anio{i_year}=0.0\n"
+                    
             i_year += 1
             
             if df_year.empty:
@@ -257,15 +302,13 @@ def main():
                 
             df_year = df_year.drop_duplicates(subset=['Datetime']).sort_values('Datetime')
             
-            # Al ser un valor representativo diario, el ancho de barra es exactamente 1 día (1.0)
-            width_plot = 1.0
+            widths = df_year['days_in_quarter']
             color_bar_base = COLORES_POR_AÑO.get(year, '#555555')
-            
-            # Si el día es inválido (<75%), se pinta de gris claro (#b0b0b0)
             colores = [color_bar_base if v else '#b0b0b0' for v in df_year['valido']]
             
-            ax.bar(df_year['Datetime'], df_year['valor_diario'], color=colores, 
-                   width=width_plot, align='center')
+            # Agregamos edgecolor='black' y linewidth=0.5 para delinear las barras
+            ax.bar(df_year['Datetime'], df_year['valor_trimestral'], color=colores, 
+                   width=widths, align='edge', edgecolor='black', linewidth=0.5)
             datos_ploteados = True
             
         if not datos_ploteados:
@@ -273,14 +316,14 @@ def main():
             continue
             
         if texto_hallazgos:
-            # Archivos txt etiquetados como "dia"
-            filename_txt = f"{estacion}-{cont_str}-diario-{AÑO_INICIO}-{AÑO_FIN}.txt"
+            filename_txt = f"{estacion}-{cont_str}-trimestral-{AÑO_INICIO}-{AÑO_FIN}.txt"
             filepath_txt = os.path.join(out_dir_text, filename_txt)
             with open(filepath_txt, 'w', encoding='utf-8') as f:
                 f.write(texto_hallazgos.strip() + "\n")
             print(f"   Generado texto: {filepath_txt}")
             
-        ax.set_ylim(0, y_max_plot + 10)
+        # Agregamos unidades más allá del límite
+        ax.set_ylim(0, y_max_plot * 1.05 + 10)
         ax.set_xlim(pd.Timestamp(AÑO_INICIO, 1, 1), pd.Timestamp(AÑO_FIN, 12, 31))
         
         xlims = ax.get_xlim()
@@ -294,23 +337,24 @@ def main():
             ax.text(xlims[1], NORMA_SECUNDARIA, "Valor de la Norma Secundaria ", 
                     color='black', fontsize=10, va='bottom', ha='right', fontweight='bold')
 
-        major_locator = mdates.DayLocator(bymonthday=[1])
-        minor_locator = mdates.DayLocator(bymonthday=[15])
+        major_locator = mdates.MonthLocator()
+        minor_locator = mdates.MonthLocator(bymonthday=15)
+        
         ax.xaxis.set_major_locator(major_locator)
         ax.xaxis.set_minor_locator(minor_locator)
+        ax.xaxis.set_major_formatter(plt.NullFormatter())
         
-        meses_es = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
-        
-        def format_date(x, pos=None):
+        meses_es = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
+        def format_date_minor(x, pos=None):
             dt = mdates.num2date(x)
-            return f"{meses_es[dt.month - 1]}-{dt.day:02d}"
+            # Quitamos el año de la etiqueta
+            return f"{meses_es[dt.month - 1]}"
             
-        formatter = plt.FuncFormatter(format_date)
-        ax.xaxis.set_major_formatter(formatter)
-        ax.xaxis.set_minor_formatter(plt.NullFormatter())
+        formatter_minor = plt.FuncFormatter(format_date_minor)
+        ax.xaxis.set_minor_formatter(formatter_minor)
         
-        ax.tick_params(axis='x', which='both', labelsize=9)
-        plt.setp(ax.get_xticklabels(which='major'), rotation=45, ha='right')
+        ax.tick_params(axis='x', which='minor', labelsize=9, length=0)
+        ax.tick_params(axis='x', which='major', length=5) 
         
         ax.set_ylabel(UNIDADES, fontsize=11)
         
@@ -321,28 +365,25 @@ def main():
         ax.set_title(titulo_dinamico, color=COLOR_TITULO, fontsize=14, pad=15)
         
         ax.set_axisbelow(True)
-        ax.grid(True, which='major', axis='both', linestyle=':', alpha=0.7)
+        # Líneas guía horizontales y verticales
+        ax.grid(True, which='major', axis='both', linestyle=':', alpha=0.7) 
         
-        # Construir la leyenda manualmente
         handles = []
-        años_presentes = df_daily['Fecha'].dt.year.unique()
+        años_presentes = df_trimestre['Datetime'].dt.year.unique()
         años_presentes = [y for y in años_presentes if AÑO_INICIO <= y <= AÑO_FIN]
-        for year in range(AÑO_INICIO, AÑO_FIN + 1):
+        for year in sorted(años_presentes):
             color = COLORES_POR_AÑO.get(year, '#555555')
-            if year in df_daily['Datetime'].dt.year.values:
-                handles.append(mpatches.Patch(facecolor=color, label=str(year)))
-                
-        if not df_daily[df_daily['valido'] == False].empty:
-            handles.append(mpatches.Patch(facecolor='#b0b0b0', label='Datos < 75% (No válido)'))
+            handles.append(mpatches.Patch(color=color, label=str(year)))
             
-        ax.legend(handles=handles, loc='upper center', bbox_to_anchor=(0.5, -0.20), 
+        if not df_trimestre['valido'].all():
+            handles.append(mpatches.Patch(color='#b0b0b0', label='Datos < 75% (No válido)'))
+            
+        ax.legend(handles=handles, loc='upper center', bbox_to_anchor=(0.5, -0.15), 
                   ncol=len(handles), frameon=False)
         
-        # Archivos de imagen etiquetados como "dia"
-        filename_img = f"{estacion}-{cont_str}-diario-{AÑO_INICIO}-{AÑO_FIN}.png"
+        filename_img = f"{estacion}-{cont_str}-trimestral-{AÑO_INICIO}-{AÑO_FIN}.png"
         filepath_img = os.path.join(out_dir_chart, filename_img)
-        fig.subplots_adjust(bottom=0.22, top=0.92, left=0.06, right=0.98)
-        plt.savefig(filepath_img, dpi=DPI_GRAFICO)
+        plt.savefig(filepath_img, dpi=300, bbox_inches='tight')
         plt.close(fig)
         
         print(f"   Generado gráfico: {filepath_img}")

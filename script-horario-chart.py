@@ -17,6 +17,11 @@ COLOR_TITULO = "white"  # 'white' para ocultar, 'black' para mostrar
 NORMA_PRIMARIA = None  
 NORMA_SECUNDARIA = None 
 
+# --- DIMENSIONES DEL GRÁFICO ---
+ANCHO_GRAFICO_PX = 1280
+ALTO_GRAFICO_PX = 480
+DPI_GRAFICO = 100
+
 # Mismo color por año 
 COLORES_POR_AÑO = {
     2022: '#8c564b',
@@ -153,7 +158,7 @@ def main():
         if df[col_objetivo].dtype == object:
             df[col_objetivo] = df[col_objetivo].astype(str).str.replace('"', '').str.replace(',', '.').astype(float)
             
-        fig, ax = plt.subplots(figsize=(16, 6))
+        fig, ax = plt.subplots(figsize=(ANCHO_GRAFICO_PX / DPI_GRAFICO, ALTO_GRAFICO_PX / DPI_GRAFICO))
         datos_ploteados = False
         
         texto_hallazgos = ""
@@ -207,13 +212,13 @@ def main():
             continue
             
         if texto_hallazgos:
-            filename_txt = f"{estacion}-{cont_str}-hora-{AÑO_INICIO}-{AÑO_FIN}.txt"
+            filename_txt = f"{estacion}-{cont_str}-horario-{AÑO_INICIO}-{AÑO_FIN}.txt"
             filepath_txt = os.path.join(out_dir_text, filename_txt)
             with open(filepath_txt, 'w', encoding='utf-8') as f:
                 f.write(texto_hallazgos.strip() + "\n")
             print(f"   Generado texto: {filepath_txt}")
             
-        ax.set_ylim(0, y_max_plot * 1.05 + 10)
+        ax.set_ylim(0, y_max_plot + 10)
         ax.set_xlim(pd.Timestamp(AÑO_INICIO, 1, 1), pd.Timestamp(AÑO_FIN, 12, 31))
         
         xlims = ax.get_xlim()
@@ -240,10 +245,10 @@ def main():
             
         formatter = plt.FuncFormatter(format_date)
         ax.xaxis.set_major_formatter(formatter)
-        ax.xaxis.set_minor_formatter(formatter)
+        ax.xaxis.set_minor_formatter(plt.NullFormatter())
         
         ax.tick_params(axis='x', which='both', labelsize=9)
-        plt.setp(ax.get_xticklabels(which='both'), rotation=45, ha='right')
+        plt.setp(ax.get_xticklabels(which='major'), rotation=45, ha='right')
         
         ax.set_ylabel(UNIDADES, fontsize=11)
         
@@ -256,12 +261,13 @@ def main():
         ax.set_axisbelow(True)
         ax.grid(True, which='major', axis='both', linestyle=':', alpha=0.7)
         
-        ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.15), 
+        ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.20), 
                   ncol=AÑO_FIN - AÑO_INICIO + 1, frameon=False)
         
-        filename_img = f"{estacion}-{cont_str}-hora-{AÑO_INICIO}-{AÑO_FIN}.png"
+        filename_img = f"{estacion}-{cont_str}-horario-{AÑO_INICIO}-{AÑO_FIN}.png"
         filepath_img = os.path.join(out_dir_chart, filename_img)
-        plt.savefig(filepath_img, dpi=300, bbox_inches='tight')
+        fig.subplots_adjust(bottom=0.22, top=0.92, left=0.06, right=0.98)
+        plt.savefig(filepath_img, dpi=DPI_GRAFICO)
         plt.close(fig)
         
         print(f"   Generado gráfico: {filepath_img}")
