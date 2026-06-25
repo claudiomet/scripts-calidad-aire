@@ -161,25 +161,30 @@ def main():
         
         for year in range(AÑO_INICIO, AÑO_FIN + 1):
             df_year = df[df['Fecha'].dt.year == year].copy()
-            df_year = df_year.dropna(subset=['Datetime', col_objetivo])
-            
-            if df_year.empty:
-                continue
-                
-            idx_max_year = df_year[col_objetivo].idxmax()
-            row_max = df_year.loc[idx_max_year]
-            
-            fecha_str = row_max['Fecha'].strftime('%Y-%m-%d') if pd.notnull(row_max['Fecha']) else ""
-            hora_val = int(row_max['Hora']) if pd.notnull(row_max['Hora']) else 0
-            hora_str = f"{hora_val:02d}:00"
-            valor_max = row_max[col_objetivo]
             
             texto_hallazgos += f"anio{i_year}={year}\n"
-            texto_hallazgos += f"fecha_max_hora_anio{i_year}={fecha_str}\n"
-            texto_hallazgos += f"hora_max_hora_anio{i_year}={hora_str}\n"
-            texto_hallazgos += f"valor_max_hora_anio{i_year}={valor_max:.2f}\n"
-            i_year += 1
+            
+            df_year_valid = df_year.dropna(subset=['Datetime', col_objetivo])
+            
+            if not df_year_valid.empty:
+                idx_max_year = df_year_valid[col_objetivo].idxmax()
+                row_max = df_year_valid.loc[idx_max_year]
                 
+                fecha_str = row_max['Fecha'].strftime('%Y-%m-%d') if pd.notnull(row_max['Fecha']) else ""
+                hora_val = int(row_max['Hora']) if 'Hora' in row_max and pd.notnull(row_max['Hora']) else 0
+                hora_str = f"{hora_val:02d}:00"
+                valor_max = row_max[col_objetivo]
+                
+                texto_hallazgos += f"fecha_max_hora_anio{i_year}={fecha_str}\n"
+                texto_hallazgos += f"hora_max_hora_anio{i_year}={hora_str}\n"
+                texto_hallazgos += f"valor_max_hora_anio{i_year}={valor_max:.2f}\n"
+            else:
+                texto_hallazgos += f"fecha_max_hora_anio{i_year}=\n"
+                texto_hallazgos += f"hora_max_hora_anio{i_year}=\n"
+                texto_hallazgos += f"valor_max_hora_anio{i_year}=\n"
+                
+            i_year += 1
+            
             df_year = df_year.drop_duplicates(subset=['Datetime']).sort_values('Datetime')
             
             bar_width = 1.0  
@@ -208,7 +213,7 @@ def main():
                 f.write(texto_hallazgos.strip() + "\n")
             print(f"   Generado texto: {filepath_txt}")
             
-        ax.set_ylim(0, y_max_plot * 1.1)
+        ax.set_ylim(0, y_max_plot * 1.05 + 10)
         ax.set_xlim(pd.Timestamp(AÑO_INICIO, 1, 1), pd.Timestamp(AÑO_FIN, 12, 31))
         
         xlims = ax.get_xlim()
